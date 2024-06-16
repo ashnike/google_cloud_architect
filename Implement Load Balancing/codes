@@ -1,0 +1,85 @@
+gcloud config set compute/region Region # Region given in lab
+
+gcloud config set compute/zone Zone    # zone given in lab
+
+# Set variables
+INSTANCE_NAME="nucleus-jumphost-734" #name given in lab
+ZONE="us-central1-a" #zone given in lab
+MACHINE_TYPE="e2-micro"
+
+# Create the jumphost instance
+gcloud compute instances create $INSTANCE_NAME \
+    --zone=$ZONE \
+    --machine-type=$MACHINE_TYPE \
+    --image-family=debian-10 \
+    --image-project=debian-cloud
+
+
+cat << EOF > startup.sh
+#! /bin/bash
+apt-get update
+apt-get install -y nginx
+service nginx start
+sed -i -- 's/nginx/Google Cloud Platform - '"\$HOSTNAME"'/' /var/www/html/index.nginx-debian.html
+EOF
+
+
+gcloud compute instance-templates create nginx-template \
+    --machine-type=e2-medium \
+    --metadata-from-file startup-script=startup.sh
+
+
+gcloud compute instance-groups managed create nginx-group \
+    --base-instance-name nginx-server \
+    --size 2 \
+    --template nginx-template \
+    --zone us-central1-a
+
+gcloud compute firewall-rules create accept-tcp-rule-535 \ #firewall rule name given in lab
+    --allow tcp:80 \
+    --target-tags http-server \
+    --description "Allow port 80 access to http-server"
+    
+    
+gcloud compute health-checks create http http-basic-check \
+    --port 80
+
+gcloud compute instance-groups managed set-named-ports nginx-group \
+    --named-ports http:80 \
+    --zone us-central1-a
+
+gcloud compute backend-services create nginx-backend-service \
+    --protocol HTTP \
+    --health-checks http-basic-check \
+    --global
+
+gcloud compute backend-services add-backend nginx-backend-service \
+    --instance-group nginx-group \
+    --instance-group-zone us-central1-a \
+    --global
+
+gcloud compute url-maps create web-map \
+    --default-service nginx-backend-service
+
+gcloud compute target-http-proxies create http-lb-proxy \
+    --url-map web-map
+    
+gcloud compute addresses create lb-ipv4-1 --ip-version=IPV4 --global
+
+gcloud compute forwarding-rules create http-content-rule \
+    --global \
+    --target-http-proxy http-lb-proxy \
+    --ports 80 \
+    --address lb-ipv4-1
+
+gcloud compute firewall-rules create fw-allow-health-check \
+  --network=default \
+  --action=allow \
+  --direction=ingress \
+  --source-ranges=130.211.0.0/22,35.191.0.0/16 \
+  --rules=tcp:80
+
+
+gcloud compute forwarding-rules list
+
+
